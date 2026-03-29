@@ -1,4 +1,4 @@
-.PHONY: test test_watch test_integration lint type format build start_temporal stop_temporal wait_temporal test_integration_docker docs docs_serve
+.PHONY: test test_watch test_integration lint type format build start_temporal stop_temporal wait_temporal test_integration_docker docs docs_serve setup
 
 ######################
 # TESTING AND COVERAGE
@@ -51,6 +51,14 @@ docs:
 
 docs_serve:
 	uv run mkdocs serve
+
+######################
+# SETUP
+######################
+
+setup:
+	uv sync
+	git config core.hooksPath .githooks
 
 ######################
 # BUILD

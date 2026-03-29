@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -e
+
+# Skip if no Python files are staged
+STAGED_PY_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true)
+
+if [ -z "$STAGED_PY_FILES" ]; then
+    exit 0
+fi
+
+echo "Running format and lint on staged Python files..."
+
+make format
+
+# Re-stage any files that were reformatted
+git add $STAGED_PY_FILES
+
+make lint
