@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagent-temporal"
+version = "0.1.0"
+description = "Temporal integration for Deep Agents - durable execution for AI agent workflows."
+authors = []
+requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+dependencies = [
+    "langgraph-temporal>=0.1.0",
+    "langgraph>=1.0.0",
+    "temporalio>=1.7.0",
+]
+
+[tool.uv.sources]
+langgraph-temporal = { path = "../langgraph-temporal", editable = true }
+
+[dependency-groups]
+test = [
+  "pytest",
+  "pytest-asyncio",
+  "pytest-mock",
+  "pytest-watcher",
+  "langgraph",
+  "pytest-retry>=1.7.0",
+]
+lint = [
+  "ruff",
+  "codespell",
+  "mypy",
+]
+dev = [
+  {include-group = "test"},
+  {include-group = "lint"},
+]
+
+[tool.uv]
+default-groups = ['dev']
+
+[tool.hatch.build.targets.wheel]
+include = ["deepagent_temporal"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config --durations=5 -vv"
+asyncio_mode = "auto"
+markers = [
+    "integration: marks tests that require a local Temporal server (deselect with '-m \"not integration\"')",
+]
+
+[tool.ruff]
+lint.select = [
+  "E",  # pycodestyle
+  "F",  # Pyflakes
+  "UP", # pyupgrade
+  "B",  # flake8-bugbear
+  "I",  # isort
+  "UP", # pyupgrade
+]
+lint.ignore = ["E501", "B008"]
+target-version = "py310"
+
+[tool.pytest-watcher]
+now = true
+delay = 0.1
+runner_args = ["--ff", "-v", "--tb", "short"]
+patterns = ["*.py"]
+
+[tool.mypy]
+disallow_untyped_defs = "True"
+explicit_package_bases = "True"
+warn_no_return = "False"
+warn_unused_ignores = "True"
+warn_redundant_casts = "True"
+allow_redefinition = "True"
+disable_error_code = "typeddict-item, return-value"
