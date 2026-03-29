@@ -17,7 +17,7 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 from langgraph.temporal.activities import _child_workflow_requests_var
 from langgraph.temporal.converter import GraphRegistry
-from langgraph.types import interrupt
+from langgraph.types import Command, Send, interrupt
 from temporalio.client import Client as TemporalClient
 from temporalio.worker import UnsandboxedWorkflowRunner
 
@@ -49,6 +49,73 @@ class SubAgentState(TypedDict):
 
 class InterruptState(TypedDict):
     value: str
+
+
+class ParallelState(TypedDict):
+    items_a: list[str]
+    items_b: list[str]
+    result: list[str]
+
+
+class CondState(TypedDict):
+    route: str
+    value: str
+
+
+class GotoState(TypedDict):
+    from_a: bool
+    from_b: bool
+
+
+class LoopState(TypedDict):
+    count: int
+    history: str
+
+
+class ScatterGatherState(TypedDict):
+    subjects: list[str]
+    results: Annotated[list[str], operator.add]
+    summary: str
+
+
+class WorkerInput(TypedDict):
+    subject: str
+
+
+class MultiInterruptState(TypedDict):
+    log: Annotated[list[str], operator.add]
+
+
+class ErrorRecoveryState(TypedDict):
+    attempts: int
+    value: str
+
+
+class PipelineState(TypedDict):
+    """State for a multi-stage data processing pipeline."""
+
+    raw_data: str
+    parsed: str
+    validated: str
+    transformed: str
+    output: str
+
+
+class ToolCallState(TypedDict):
+    """State simulating an agentic tool-calling loop."""
+
+    messages: Annotated[list[str], operator.add]
+    tool_calls: Annotated[list[str], operator.add]
+    tool_results: Annotated[list[str], operator.add]
+
+
+class BranchMergeState(TypedDict):
+    """State for branch-and-merge pattern (parallel analysis then merge)."""
+
+    input_data: str
+    analysis_a: str
+    analysis_b: str
+    merged: str
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +159,6 @@ def tools_node(state: AgentState) -> dict[str, Any]:
 
 def should_continue(state: AgentState) -> str:
     """After tools, loop back to model or end."""
-    # Simple: end after one tool call
     tool_results = [m for m in state.get("messages", []) if m.startswith("tool_result")]
     return END if tool_results else "call_model"
 
@@ -129,6 +195,184 @@ def interrupt_node_a(state: InterruptState) -> dict[str, Any]:
 def interrupt_node_b(state: InterruptState) -> dict[str, Any]:
     answer = interrupt("need approval")
     return {"value": state.get("value", "") + f"b({answer})"}
+
+
+# -- Parallel nodes --
+
+
+def par_a(state: ParallelState) -> dict[str, Any]:
+    return {"items_a": ["a"]}
+
+
+def par_b(state: ParallelState) -> dict[str, Any]:
+    return {"items_b": ["b"]}
+
+
+def par_c(state: ParallelState) -> dict[str, Any]:
+    a = state.get("items_a", [])
+    b = state.get("items_b", [])
+    return {"result": sorted(a + b)}
+
+
+# -- Conditional edge nodes --
+
+
+def cond_a(state: CondState) -> dict[str, Any]:
+    return {"route": "go_b", "value": "a"}
+
+
+def cond_b(state: CondState) -> dict[str, Any]:
+    return {"value": state["value"] + "b"}
+
+
+def cond_c(state: CondState) -> dict[str, Any]:
+    return {"value": state["value"] + "c"}
+
+
+def cond_router(state: CondState) -> str:
+    return "b" if state.get("route") == "go_b" else "c"
+
+
+# -- Command.goto nodes --
+
+
+def goto_a(state: GotoState) -> Command:
+    return Command(update={"from_a": True}, goto="b")
+
+
+def goto_b(state: GotoState) -> dict[str, Any]:
+    return {"from_b": True}
+
+
+# -- Loop nodes --
+
+
+def loop_a(state: LoopState) -> dict[str, Any]:
+    count = state.get("count", 0)
+    return {"count": count + 1, "history": state.get("history", "") + "a"}
+
+
+def loop_b(state: LoopState) -> dict[str, Any]:
+    return {"history": state.get("history", "") + "b"}
+
+
+def loop_should_continue(state: LoopState) -> str:
+    return "a" if state.get("count", 0) < 3 else "end"
+
+
+# -- Scatter-gather nodes --
+
+
+def scatter_node(state: ScatterGatherState) -> Command:
+    sends = [Send("worker", {"subject": s}) for s in state["subjects"]]
+    return Command(goto=sends)
+
+
+def worker_node(state: WorkerInput) -> dict[str, Any]:
+    subject = state["subject"]
+    return {"results": [f"processed:{subject}"]}
+
+
+def gather_node(state: ScatterGatherState) -> dict[str, Any]:
+    return {"summary": ",".join(sorted(state.get("results", [])))}
+
+
+# -- Multi-interrupt nodes --
+
+
+def multi_interrupt_step1(state: MultiInterruptState) -> dict[str, Any]:
+    approval = interrupt({"step": 1, "message": "Approve step 1?"})
+    return {"log": [f"step1({approval})"]}
+
+
+def multi_interrupt_step2(state: MultiInterruptState) -> dict[str, Any]:
+    approval = interrupt({"step": 2, "message": "Approve step 2?"})
+    return {"log": [f"step2({approval})"]}
+
+
+def multi_interrupt_finalize(state: MultiInterruptState) -> dict[str, Any]:
+    return {"log": ["finalized"]}
+
+
+# -- Error recovery nodes --
+
+
+_attempt_counter: dict[str, int] = {}
+
+
+def flaky_node(state: ErrorRecoveryState) -> dict[str, Any]:
+    """Simulates a node that fails on first attempt then succeeds."""
+    wf_key = state.get("value", "default")
+    _attempt_counter.setdefault(wf_key, 0)
+    _attempt_counter[wf_key] += 1
+    return {
+        "attempts": _attempt_counter[wf_key],
+        "value": f"success_on_attempt_{_attempt_counter[wf_key]}",
+    }
+
+
+# -- Pipeline nodes --
+
+
+def parse_data(state: PipelineState) -> dict[str, Any]:
+    return {"parsed": f"parsed({state['raw_data']})"}
+
+
+def validate_data(state: PipelineState) -> dict[str, Any]:
+    return {"validated": f"valid({state['parsed']})"}
+
+
+def transform_data(state: PipelineState) -> dict[str, Any]:
+    return {"transformed": f"transformed({state['validated']})"}
+
+
+def output_data(state: PipelineState) -> dict[str, Any]:
+    return {"output": f"output({state['transformed']})"}
+
+
+# -- Tool-calling loop nodes --
+
+
+def agent_decide(state: ToolCallState) -> dict[str, Any]:
+    """Agent decides what tool to call based on messages so far."""
+    n_results = len(state.get("tool_results", []))
+    if n_results >= 2:
+        return {"messages": [f"final_answer(tools_used={n_results})"]}
+    tool_name = "search" if n_results == 0 else "calculate"
+    return {
+        "messages": [f"call_tool:{tool_name}"],
+        "tool_calls": [tool_name],
+    }
+
+
+def execute_tools(state: ToolCallState) -> dict[str, Any]:
+    """Execute the most recent tool call."""
+    last_call = state["tool_calls"][-1] if state.get("tool_calls") else "unknown"
+    return {
+        "messages": [f"result:{last_call}=done"],
+        "tool_results": [f"{last_call}=done"],
+    }
+
+
+def tool_loop_router(state: ToolCallState) -> str:
+    """Route: if agent produced final_answer, end. Otherwise go to tools."""
+    last_msg = state["messages"][-1] if state.get("messages") else ""
+    return END if last_msg.startswith("final_answer") else "tools"
+
+
+# -- Branch-and-merge nodes --
+
+
+def analyze_a(state: BranchMergeState) -> dict[str, Any]:
+    return {"analysis_a": f"sentiment({state['input_data']})"}
+
+
+def analyze_b(state: BranchMergeState) -> dict[str, Any]:
+    return {"analysis_b": f"entities({state['input_data']})"}
+
+
+def merge_analyses(state: BranchMergeState) -> dict[str, Any]:
+    return {"merged": f"{state['analysis_a']}+{state['analysis_b']}"}
 
 
 # ---------------------------------------------------------------------------
@@ -414,3 +658,544 @@ class TestDeepAgentMultiTurn:
         # Should have: user_input, model_turn_1, tool_turn_2, model_turn_3, tool_turn_4
         assert len(result["messages"]) >= 4
         assert result["messages"][0] == "user_input"
+
+
+# ---------------------------------------------------------------------------
+# NEW: Advanced pattern tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestDeepAgentParallelNodes:
+    """START -> [A, B] -> C -> END: parallel node execution fan-out/fan-in.
+
+    Deep agents with parallel tool execution (e.g., search + calculate
+    concurrently) need parallel nodes to work correctly on Temporal.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_parallel_nodes(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(ParallelState)
+        builder.add_node("a", par_a)
+        builder.add_node("b", par_b)
+        builder.add_node("c", par_c)
+        builder.add_edge(START, "a")
+        builder.add_edge(START, "b")
+        builder.add_edge("a", "c")
+        builder.add_edge("b", "c")
+        builder.add_edge("c", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-parallel-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {"items_a": [], "items_b": [], "result": []},
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        assert result["result"] == ["a", "b"]
+
+
+@pytest.mark.integration
+class TestDeepAgentConditionalEdge:
+    """A -> (condition) -> B or C -> END: conditional routing.
+
+    Models the pattern where an agent decides between different
+    execution paths based on state (e.g., code vs search tool).
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_conditional_edge(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(CondState)
+        builder.add_node("a", cond_a)
+        builder.add_node("b", cond_b)
+        builder.add_node("c", cond_c)
+        builder.add_edge(START, "a")
+        builder.add_conditional_edges("a", cond_router, {"b": "b", "c": "c"})
+        builder.add_edge("b", END)
+        builder.add_edge("c", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-cond-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {"route": "", "value": ""},
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        assert result["value"] == "ab"
+
+
+@pytest.mark.integration
+class TestDeepAgentCommandGoto:
+    """A -> (Command.goto) -> B -> END: imperative routing via Command.
+
+    Models dynamic routing used by agents that decide their next
+    step programmatically (e.g., "go to code_review after generating").
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_command_goto(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(GotoState)
+        builder.add_node("a", goto_a)
+        builder.add_node("b", goto_b)
+        builder.add_edge(START, "a")
+        builder.add_edge("b", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-goto-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {"from_a": False, "from_b": False},
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        assert result["from_a"] is True
+        assert result["from_b"] is True
+
+
+@pytest.mark.integration
+class TestDeepAgentLoopWithStateAccumulation:
+    """A -> B -> A (loop 3x) -> END: stateful loop with accumulation.
+
+    Models the deep agent's call_model -> tools loop where state
+    accumulates over multiple iterations until a termination condition.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_loop_with_accumulation(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(LoopState)
+        builder.add_node("a", loop_a)
+        builder.add_node("b", loop_b)
+        builder.add_edge(START, "a")
+        builder.add_edge("a", "b")
+        builder.add_conditional_edges("b", loop_should_continue, {"a": "a", "end": END})
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-loop-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {"count": 0, "history": ""},
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        assert result["count"] == 3
+        assert result["history"] == "ababab"
+
+
+@pytest.mark.integration
+class TestDeepAgentScatterGather:
+    """scatter -> [worker x N] -> gather -> END: fan-out via Send.
+
+    Models the pattern where an agent dispatches multiple parallel
+    tasks (e.g., researching multiple topics simultaneously) and
+    collects results. Uses Command(goto=Send(...)) for dynamic dispatch.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_scatter_gather(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(ScatterGatherState)
+        builder.add_node("scatter", scatter_node)
+        builder.add_node("worker", worker_node)
+        builder.add_node("gather", gather_node)
+        builder.add_edge(START, "scatter")
+        builder.add_edge("worker", "gather")
+        builder.add_edge("gather", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        subjects = ["alpha", "beta", "gamma"]
+        wf_id = f"e2e-scatter-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {"subjects": subjects, "results": [], "summary": ""},
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        assert sorted(result["results"]) == [
+            "processed:alpha",
+            "processed:beta",
+            "processed:gamma",
+        ]
+        assert result["summary"] == "processed:alpha,processed:beta,processed:gamma"
+
+
+@pytest.mark.integration
+class TestDeepAgentMultipleInterrupts:
+    """step1(interrupt) -> step2(interrupt) -> finalize -> END.
+
+    Models a multi-stage approval pipeline where a deep agent
+    requires human approval at multiple checkpoints (e.g., plan
+    approval then deployment approval).
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_sequential_interrupts(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(MultiInterruptState)
+        builder.add_node("step1", multi_interrupt_step1)
+        builder.add_node("step2", multi_interrupt_step2)
+        builder.add_node("finalize", multi_interrupt_finalize)
+        builder.add_edge(START, "step1")
+        builder.add_edge("step1", "step2")
+        builder.add_edge("step2", "finalize")
+        builder.add_edge("finalize", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        wf_id = f"e2e-multiint-{uuid.uuid4().hex[:8]}"
+        config = {"configurable": {"thread_id": wf_id}}
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        async with worker:
+            handle = await agent.astart({"log": []}, config)
+
+            # Wait for first interrupt
+            for _ in range(30):
+                state = await agent.get_state(config)
+                if state["status"] == "interrupted":
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                pytest.fail("Did not reach first interrupt")
+
+            # Resume first interrupt
+            await agent.resume(config, "yes_step1")
+
+            # Wait for second interrupt
+            for _ in range(30):
+                state = await agent.get_state(config)
+                if state["status"] == "interrupted":
+                    # Check it's the second interrupt (step1 result already in log)
+                    if any(
+                        "step1" in str(v)
+                        for v in state.get("values", {}).get("log", [])
+                    ):
+                        break
+                await asyncio.sleep(0.2)
+            else:
+                pytest.fail("Did not reach second interrupt")
+
+            # Resume second interrupt
+            await agent.resume(config, "yes_step2")
+
+            result = await handle.result()
+
+        log = result.channel_values["log"]
+        assert "step1(yes_step1)" in log
+        assert "step2(yes_step2)" in log
+        assert "finalized" in log
+
+
+@pytest.mark.integration
+class TestDeepAgentStateQuery:
+    """Query workflow state during and after execution.
+
+    Models the pattern where a client checks agent progress
+    (e.g., a UI polling for the current state of a long-running task).
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_state_query_after_completion(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(LoopState)
+        builder.add_node("a", loop_a)
+        builder.add_node("b", loop_b)
+        builder.add_edge(START, "a")
+        builder.add_edge("a", "b")
+        builder.add_edge("b", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        wf_id = f"e2e-query-{uuid.uuid4().hex[:8]}"
+        config = {"configurable": {"thread_id": wf_id}}
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        async with worker:
+            handle = await agent.astart({"count": 0, "history": ""}, config)
+            await handle.result()
+
+            state = await agent.get_state(config)
+
+        assert state["values"]["count"] == 1
+        assert state["values"]["history"] == "ab"
+        assert state["status"] == "done"
+
+
+@pytest.mark.integration
+class TestDeepAgentPipeline:
+    """parse -> validate -> transform -> output -> END: linear data pipeline.
+
+    Models a deep agent that processes data through multiple
+    transformation stages (e.g., read file -> parse -> validate ->
+    write output), common in coding agents.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_multi_stage_pipeline(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(PipelineState)
+        builder.add_node("parse", parse_data)
+        builder.add_node("validate", validate_data)
+        builder.add_node("transform", transform_data)
+        builder.add_node("output", output_data)
+        builder.add_edge(START, "parse")
+        builder.add_edge("parse", "validate")
+        builder.add_edge("validate", "transform")
+        builder.add_edge("transform", "output")
+        builder.add_edge("output", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-pipeline-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {
+                    "raw_data": "input_data",
+                    "parsed": "",
+                    "validated": "",
+                    "transformed": "",
+                    "output": "",
+                },
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        assert result["output"] == "output(transformed(valid(parsed(input_data))))"
+
+
+@pytest.mark.integration
+class TestDeepAgentToolCallingLoop:
+    """agent -> tools -> agent -> tools -> agent(final) -> END.
+
+    Simulates a realistic agentic tool-calling loop where the agent
+    calls multiple tools sequentially, accumulating results, before
+    producing a final answer. This is the core deep agent pattern.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_tool_calling_loop(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(ToolCallState)
+        builder.add_node("agent", agent_decide)
+        builder.add_node("tools", execute_tools)
+        builder.add_edge(START, "agent")
+        builder.add_conditional_edges(
+            "agent", tool_loop_router, {END: END, "tools": "tools"}
+        )
+        builder.add_edge("tools", "agent")
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-toolloop-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {"messages": [], "tool_calls": [], "tool_results": []},
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        # Agent should have called 2 tools (search, calculate) then final answer
+        assert len(result["tool_results"]) == 2
+        assert "search=done" in result["tool_results"]
+        assert "calculate=done" in result["tool_results"]
+        assert any("final_answer" in m for m in result["messages"])
+
+
+@pytest.mark.integration
+class TestDeepAgentBranchAndMerge:
+    """START -> [analyze_a, analyze_b] -> merge -> END.
+
+    Models parallel analysis (e.g., sentiment + entity extraction)
+    followed by a merge step. Common in agents that need to gather
+    multiple perspectives before making a decision.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_branch_and_merge(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(BranchMergeState)
+        builder.add_node("analyze_a", analyze_a)
+        builder.add_node("analyze_b", analyze_b)
+        builder.add_node("merge", merge_analyses)
+        builder.add_edge(START, "analyze_a")
+        builder.add_edge(START, "analyze_b")
+        builder.add_edge("analyze_a", "merge")
+        builder.add_edge("analyze_b", "merge")
+        builder.add_edge("merge", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-branch-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {
+                    "input_data": "hello world",
+                    "analysis_a": "",
+                    "analysis_b": "",
+                    "merged": "",
+                },
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        assert result["analysis_a"] == "sentiment(hello world)"
+        assert result["analysis_b"] == "entities(hello world)"
+        assert result["merged"] == "sentiment(hello world)+entities(hello world)"
+
+
+@pytest.mark.integration
+class TestDeepAgentInterruptBefore:
+    """Interrupt before a specific node using compile-time configuration.
+
+    Models the pattern where certain nodes (e.g., "deploy", "delete")
+    require pre-approval before execution.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_interrupt_before_node(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        builder = StateGraph(LoopState)
+        builder.add_node("a", loop_a)
+        builder.add_node("b", loop_b)
+        builder.add_edge(START, "a")
+        builder.add_edge("a", "b")
+        builder.add_edge("b", END)
+        graph = builder.compile(interrupt_before=["b"])
+
+        agent = TemporalDeepAgent(graph, temporal_client, task_queue=task_queue)
+        wf_id = f"e2e-intbefore-{uuid.uuid4().hex[:8]}"
+        config = {"configurable": {"thread_id": wf_id}}
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        async with worker:
+            handle = await agent.astart({"count": 0, "history": ""}, config)
+
+            # Wait for interrupt (before node "b")
+            for _ in range(30):
+                state = await agent.get_state(config)
+                if state["status"] == "interrupted":
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                pytest.fail("Did not reach interrupt before 'b'")
+
+            # At this point, "a" has run but "b" has not
+            assert state["values"]["history"] == "a"
+
+            # Resume
+            await agent.resume(config, None)
+
+            result = await handle.result()
+
+        assert result.channel_values["history"] == "ab"
+
+
+@pytest.mark.integration
+class TestDeepAgentWorkerAffinityWithParallel:
+    """Worker affinity + parallel nodes: all Activities on same queue.
+
+    Tests that even when nodes execute in parallel, all Activities
+    are dispatched to the worker-specific queue.
+    """
+
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    async def test_affinity_with_parallel_nodes(
+        self, temporal_client: TemporalClient, task_queue: str
+    ) -> None:
+        class AffinityParallelState(TypedDict):
+            queues: Annotated[list[str], operator.add]
+
+        def par_node_1(state: AffinityParallelState) -> dict[str, Any]:
+            return {"queues": [_get_activity_task_queue()]}
+
+        def par_node_2(state: AffinityParallelState) -> dict[str, Any]:
+            return {"queues": [_get_activity_task_queue()]}
+
+        def par_node_3(state: AffinityParallelState) -> dict[str, Any]:
+            return {"queues": [_get_activity_task_queue()]}
+
+        builder = StateGraph(AffinityParallelState)
+        builder.add_node("n1", par_node_1)
+        builder.add_node("n2", par_node_2)
+        builder.add_node("n3", par_node_3)
+        builder.add_edge(START, "n1")
+        builder.add_edge(START, "n2")
+        builder.add_edge("n1", "n3")
+        builder.add_edge("n2", "n3")
+        builder.add_edge("n3", END)
+        graph = builder.compile()
+
+        agent = TemporalDeepAgent(
+            graph, temporal_client, task_queue=task_queue, use_worker_affinity=True
+        )
+        worker = agent.create_worker(**_WORKER_KWARGS)
+
+        wf_id = f"e2e-affpar-{uuid.uuid4().hex[:8]}"
+        async with worker:
+            result = await agent.ainvoke(
+                {"queues": []},
+                config={"configurable": {"thread_id": wf_id}},
+            )
+
+        # All 3 Activities should be on the same worker-specific queue
+        assert len(result["queues"]) == 3
+        assert all(q == result["queues"][0] for q in result["queues"])
+        assert result["queues"][0] != task_queue
