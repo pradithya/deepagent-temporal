@@ -201,6 +201,18 @@ if state["status"] == "interrupted":
     )
 ```
 
+## Limitations
+
+This project is experimental. Before adopting, understand these constraints:
+
+- **Streaming is Activity-level, not token-level.** The `astream` API emits events when nodes start and complete, but does not stream individual LLM tokens. Temporal Activities are request-response — the entire LLM call runs to completion before the result is returned. For token-level streaming, a sidecar channel (Redis pub/sub) is needed. See [docs/comparison.md](docs/comparison.md) for how this compares to LangGraph Platform.
+
+- **`UnsandboxedWorkflowRunner` is required.** LangGraph's imports trigger Temporal's workflow sandbox restrictions. All non-deterministic code runs in Activities (not the workflow function), so the practical risk is low. See [docs/sandbox-tradeoffs.md](docs/sandbox-tradeoffs.md) for details.
+
+- **Payload size limits apply.** Temporal has a ~2 MB per-event payload limit. Long conversations with hundreds of messages can exceed this. Use `SummarizationMiddleware` to compact history, or the claim-check pattern for large state. See [docs/serialization.md](docs/serialization.md).
+
+- **Double-retry risk with LLM calls.** LLM SDKs retry internally. Temporal also retries failed Activities. Without configuration, both layers retry — causing duplicate API costs. Use `TemporalDeepAgent.recommended_retry_policies()` to disable Temporal-level retries for LLM nodes. See [docs/retry-semantics.md](docs/retry-semantics.md).
+
 ## Local Development
 
 For testing without a Temporal server deployment:
