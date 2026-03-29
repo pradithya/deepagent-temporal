@@ -201,11 +201,56 @@ if state["status"] == "interrupted":
     )
 ```
 
+## Token Streaming
+
+Token-level LLM streaming is supported via callback-based capture. Enable it with `enable_token_streaming=True`:
+
+```python
+temporal_agent = TemporalDeepAgent(
+    agent, client,
+    task_queue="coding-agents",
+    enable_token_streaming=True,  # capture LLM tokens via callbacks
+)
+
+# Stream tokens (arrives after each Activity completes)
+async for token_event in temporal_agent.astream(
+    {"messages": [HumanMessage(content="Explain quantum computing")]},
+    config={"configurable": {"thread_id": "task-789"}},
+    stream_mode="tokens",
+):
+    print(token_event["token"], end="", flush=True)
+```
+
+For real-time token delivery (~10-50ms latency), add a Redis Streams sidecar:
+
+```python
+from deepagent_temporal import TemporalDeepAgent, RedisStreamBackend
+
+redis_backend = RedisStreamBackend(redis_url="redis://localhost:6379")
+
+temporal_agent = TemporalDeepAgent(
+    agent, client,
+    task_queue="coding-agents",
+    enable_token_streaming=True,
+    redis_stream_backend=redis_backend,  # real-time via Redis
+)
+
+# Tokens arrive in real-time as the LLM generates them
+async for token_event in temporal_agent.astream(
+    {"messages": [HumanMessage(content="Explain quantum computing")]},
+    config={"configurable": {"thread_id": "task-789"}},
+    stream_mode="tokens",
+):
+    print(token_event["token"], end="", flush=True)
+```
+
+**How it works:** A `StreamingNodeWrapper` wraps each graph node's runnable and injects a `TokenCapturingHandler` (LangChain callback) into the config before `ainvoke()`. The handler intercepts `on_llm_new_token` events from the chat model. With Redis, tokens are published via `XADD` in real-time; without Redis, tokens are buffered in the Activity result. See [docs/streaming-design.md](docs/streaming-design.md) for the full architecture.
+
 ## Limitations
 
 This project is experimental. Before adopting, understand these constraints:
 
-- **Streaming is Activity-level, not token-level.** The `astream` API emits events when nodes start and complete, but does not stream individual LLM tokens. Temporal Activities are request-response — the entire LLM call runs to completion before the result is returned. For token-level streaming, a sidecar channel (Redis pub/sub) is needed. See [docs/comparison.md](docs/comparison.md) for how this compares to LangGraph Platform.
+- **Token streaming requires opt-in configuration.** By default, `astream` emits Activity-level events (node started, node completed), not individual LLM tokens. Enable `enable_token_streaming=True` for token-level capture via LangChain callback injection. For real-time delivery (~10-50ms latency), add a `RedisStreamBackend`. Without Redis, tokens are buffered and delivered after each Activity completes. See [docs/streaming-design.md](docs/streaming-design.md) for the architecture and [docs/comparison.md](docs/comparison.md) for how this compares to LangGraph Platform.
 
 - **`UnsandboxedWorkflowRunner` is required.** LangGraph's imports trigger Temporal's workflow sandbox restrictions. All non-deterministic code runs in Activities (not the workflow function), so the practical risk is low. See [docs/sandbox-tradeoffs.md](docs/sandbox-tradeoffs.md) for details.
 

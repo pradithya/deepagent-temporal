@@ -46,11 +46,20 @@ nav:
     - Worker Affinity: guides/worker-affinity.md
     - Sub-Agents: guides/sub-agents.md
     - Human-in-the-Loop: guides/human-in-the-loop.md
+    - Token Streaming: guides/streaming.md
     - Local Development: guides/local-development.md
   - API Reference:
     - TemporalDeepAgent: reference/agent.md
     - SubAgentSpec: reference/config.md
     - Middleware: reference/middleware.md
+    - Streaming: reference/streaming.md
+  - Design:
+    - Architecture Decisions: architecture-decisions.md
+    - Streaming Design: streaming-design.md
+    - Serialization: serialization.md
+    - Sandbox Tradeoffs: sandbox-tradeoffs.md
+    - Retry Semantics: retry-semantics.md
+    - Comparison: comparison.md
 
 markdown_extensions:
   - admonition

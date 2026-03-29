@@ -9,7 +9,7 @@ This document compares `deepagent-temporal` with other deployment options for La
 | **Runtime** | Temporal (self-hosted) | LangGraph Platform (managed or self-hosted) | Temporal (self-hosted) |
 | **Agent framework** | Deep Agents / LangGraph | LangGraph | Framework-agnostic |
 | **Migration effort** | 3-line change from vanilla Deep Agents | Deploy to LangGraph Platform | Rewrite agent as Temporal Workflow |
-| **Streaming** | Limited — Activity-level buffering (see below) | Full token-level streaming | N/A |
+| **Streaming** | Token-level via callback capture + optional Redis Streams (see below) | Full token-level streaming (native) | N/A |
 | **HITL** | Temporal Signals (zero-resource wait) | LangGraph interrupts (process must stay alive) | Temporal Signals |
 | **Sub-agent durability** | Child Workflows (independent) | In-process (shared fate) | Manual |
 | **Crash recovery** | Automatic (Temporal replay) | Checkpoint-based | Automatic (Temporal replay) |
@@ -32,7 +32,7 @@ This document compares `deepagent-temporal` with other deployment options for La
 
 **Choose LangGraph Platform when:**
 - You want managed infrastructure with minimal operational burden.
-- You need full token-level streaming (Temporal Activities buffer responses).
+- You need native token-level streaming with zero configuration (deepagent-temporal supports token streaming but requires opt-in setup and optional Redis for real-time delivery).
 - You prefer official LangChain support and documentation.
 - You don't have existing Temporal expertise or infrastructure.
 
@@ -65,13 +65,28 @@ Some teams implement custom checkpointing using a database (PostgreSQL, Redis) a
 - You can't introduce Temporal as a dependency.
 - You need minimal infrastructure.
 
-## Streaming Limitations
+## Streaming Architecture
 
-`deepagent-temporal` uses Temporal Activities for node execution. Activities are request-response: the entire node (LLM call or tool execution) runs to completion, and the result is returned as a single payload.
+`deepagent-temporal` supports token-level LLM streaming through two mechanisms:
 
-This means:
-- **Token-level streaming** is not natively supported through Temporal's Activity mechanism.
-- The `astream` API uses `langgraph-temporal`'s `StreamBackend` abstraction, which provides Activity-level events (node started, node completed) rather than token-by-token output.
-- For token-level streaming, a sidecar channel (Redis pub/sub, SSE endpoint) running parallel to the workflow is needed. This is a roadmap item.
+### Phase 1: Callback-Based Token Capture (no extra infrastructure)
 
-LangGraph Platform supports full token-level streaming natively.
+Enable `enable_token_streaming=True` on `TemporalDeepAgent`. A `StreamingNodeWrapper` wraps each graph node and injects a `TokenCapturingHandler` (LangChain `BaseCallbackHandler`) into the config before `ainvoke()`. The handler intercepts `on_llm_new_token` events from the chat model and captures individual tokens.
+
+Without Redis, tokens are buffered in the Activity result and delivered to the client after the Activity completes. This gives token-level *data granularity* but not token-level *latency* — the client receives all tokens at once when the LLM call finishes.
+
+### Phase 2: Real-Time Delivery via Redis Streams
+
+Add a `RedisStreamBackend` for real-time delivery (~10-50ms per token). The handler publishes each token to a Redis Stream as it arrives from the LLM. The client subscribes via `XREAD` and receives tokens in real-time. Temporal still handles durable state transitions; Redis handles low-latency delivery.
+
+If Redis is unavailable, streaming degrades gracefully to Phase 1 behavior.
+
+### Comparison with LangGraph Platform
+
+LangGraph Platform supports full token-level streaming natively (in-process, no sidecar). `deepagent-temporal` achieves comparable results with `RedisStreamBackend`, but requires:
+
+- Opt-in configuration (`enable_token_streaming=True`)
+- Redis for real-time delivery (optional — without it, tokens are buffered)
+- Slightly higher per-token latency (~10-50ms vs. in-process)
+
+See [docs/streaming-design.md](streaming-design.md) for the full architecture, data flow diagrams, and middleware compatibility notes.

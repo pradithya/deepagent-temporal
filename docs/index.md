@@ -17,6 +17,7 @@ If your Deep Agent process crashes mid-task, all progress is lost. Sub-agents ar
 | **Sub-agents** | In-process, ephemeral | Independent Child Workflows |
 | **Worker affinity** | N/A | Sticky task queues keep file ops on same machine |
 | **Human-in-the-loop** | Blocks a live process | Zero-resource wait via Temporal Signals |
+| **Token streaming** | In-process only | Callback capture + optional Redis Streams for real-time delivery |
 
 ## 3-line migration
 
@@ -39,4 +40,5 @@ The `ainvoke`, `astream`, `get_state`, and `resume` APIs are identical to vanill
 - [Installation](getting-started/installation.md) — install the package
 - [Quick Start](getting-started/quickstart.md) — run your first Temporal-backed agent
 - [Core Concepts](guides/concepts.md) — understand the architecture
+- [Token Streaming](guides/streaming.md) — enable LLM token streaming
 - [API Reference](reference/agent.md) — full API documentation

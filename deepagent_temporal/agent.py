@@ -18,6 +18,8 @@ from langgraph.temporal.streaming import StreamBackend
 from temporalio.client import Client as TemporalClient
 from temporalio.client import WorkflowHandle
 
+from deepagent_temporal.streaming import RedisStreamBackend
+
 
 class TemporalDeepAgent:
     """Wraps a Deep Agent for durable execution on Temporal.
@@ -50,6 +52,14 @@ class TemporalDeepAgent:
             ``RetryPolicyConfig`` instances. Set on the compiled graph so
             ``langgraph-temporal`` includes them in the ``WorkflowInput``.
             Use ``recommended_retry_policies()`` for sensible defaults.
+        enable_token_streaming: When True, wraps graph nodes with
+            ``StreamingNodeWrapper`` at worker creation time, enabling
+            token-level capture via LangChain callback injection. Tokens
+            are delivered through ``stream_mode="tokens"`` in ``astream()``.
+        redis_stream_backend: Optional ``RedisStreamBackend`` for real-time
+            token delivery. When set, tokens are published to Redis Streams
+            as they arrive from the LLM (Phase 2). Without Redis, tokens
+            are buffered and delivered after Activity completion (Phase 1).
         workflow_execution_timeout: Maximum time for entire workflow
             execution including retries.
         workflow_run_timeout: Maximum time for a single workflow run.
@@ -68,6 +78,8 @@ class TemporalDeepAgent:
         subagent_execution_timeout: timedelta | None = None,
         node_activity_options: dict[str, ActivityOptions] | None = None,
         node_retry_policies: dict[str, RetryPolicyConfig] | None = None,
+        enable_token_streaming: bool = False,
+        redis_stream_backend: RedisStreamBackend | None = None,
         workflow_execution_timeout: timedelta | None = None,
         workflow_run_timeout: timedelta | None = None,
         stream_backend: StreamBackend | None = None,
@@ -76,6 +88,9 @@ class TemporalDeepAgent:
         # them up via hasattr(graph, "retry_policies").
         if node_retry_policies is not None:
             agent.retry_policies = node_retry_policies  # type: ignore[attr-defined]
+
+        self._enable_token_streaming = enable_token_streaming
+        self._redis_stream_backend = redis_stream_backend
 
         self._temporal_graph = TemporalGraph(
             agent,
@@ -108,12 +123,41 @@ class TemporalDeepAgent:
         self,
         input: Any,
         config: dict[str, Any] | None = None,
+        *,
+        stream_mode: str = "values",
         **kwargs: Any,
     ) -> AsyncIterator[Any]:
-        """Stream Deep Agent execution events."""
+        """Stream Deep Agent execution events.
+
+        Args:
+            input: Input to the agent.
+            config: RunnableConfig with thread_id and other settings.
+            stream_mode: One of ``"values"``, ``"updates"``, ``"custom"``,
+                or ``"tokens"``. The ``"tokens"`` mode yields ``TokenEvent``
+                dicts from LLM streaming (requires ``enable_token_streaming``).
+            **kwargs: Additional arguments passed to TemporalGraph.astream.
+        """
         config = self._inject_temporal_config(config)
-        async for event in self._temporal_graph.astream(input, config, **kwargs):
-            yield event
+
+        if stream_mode == "tokens" and self._redis_stream_backend is not None:
+            # Phase 2: Real-time token delivery via Redis Streams
+            handle = await self._temporal_graph.astart(input, config, **kwargs)
+            workflow_id = handle.id
+            async for event in self._redis_stream_backend.subscribe(workflow_id):
+                yield event
+        elif stream_mode == "tokens":
+            # Phase 1: Token events arrive via custom_data after Activity
+            # completes. Filter for token-type events in custom mode.
+            async for event in self._temporal_graph.astream(
+                input, config, stream_mode="custom", **kwargs
+            ):
+                if isinstance(event, dict) and event.get("type") == "token":
+                    yield event
+        else:
+            async for event in self._temporal_graph.astream(
+                input, config, stream_mode=stream_mode, **kwargs
+            ):
+                yield event
 
     async def astart(
         self,
@@ -143,11 +187,24 @@ class TemporalDeepAgent:
         If `worker_queue_file` was set, the worker-specific queue name is
         persisted to disk so a restarted worker re-registers on the same
         queue (preserving affinity for in-flight Activities).
+
+        When `enable_token_streaming` is True, wraps graph nodes with
+        ``StreamingNodeWrapper`` before registering the worker.
         """
         from langgraph.temporal.worker import create_worker
 
+        graph = self._temporal_graph.graph
+
+        if self._enable_token_streaming:
+            from deepagent_temporal.activity import wrap_graph_for_streaming
+
+            wrap_graph_for_streaming(
+                graph,
+                redis_backend=self._redis_stream_backend,
+            )
+
         return create_worker(
-            self._temporal_graph.graph,
+            graph,
             self._temporal_graph.client,
             self._task_queue,
             use_worker_affinity=self._use_worker_affinity,
@@ -232,6 +289,8 @@ def create_temporal_deep_agent(
     subagent_execution_timeout: timedelta | None = None,
     node_activity_options: dict[str, ActivityOptions] | None = None,
     node_retry_policies: dict[str, RetryPolicyConfig] | None = None,
+    enable_token_streaming: bool = False,
+    redis_stream_backend: RedisStreamBackend | None = None,
     workflow_execution_timeout: timedelta | None = None,
     workflow_run_timeout: timedelta | None = None,
     stream_backend: StreamBackend | None = None,
@@ -250,6 +309,8 @@ def create_temporal_deep_agent(
         subagent_execution_timeout: Max execution time for sub-agents.
         node_activity_options: Per-node Activity configuration.
         node_retry_policies: Per-node retry policy configuration.
+        enable_token_streaming: Enable token-level LLM streaming.
+        redis_stream_backend: Redis backend for real-time token delivery.
         workflow_execution_timeout: Max time for entire workflow.
         workflow_run_timeout: Max time for a single workflow run.
         stream_backend: Backend for streaming events.
@@ -267,6 +328,8 @@ def create_temporal_deep_agent(
         subagent_execution_timeout=subagent_execution_timeout,
         node_activity_options=node_activity_options,
         node_retry_policies=node_retry_policies,
+        enable_token_streaming=enable_token_streaming,
+        redis_stream_backend=redis_stream_backend,
         workflow_execution_timeout=workflow_execution_timeout,
         workflow_run_timeout=workflow_run_timeout,
         stream_backend=stream_backend,

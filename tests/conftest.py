@@ -43,3 +43,28 @@ def temporal_client(temporal_env: Any) -> Any:
     if hasattr(temporal_env, "client"):
         return temporal_env.client
     return temporal_env
+
+
+@pytest.fixture
+async def redis_backend() -> Any:
+    """Return a RedisStreamBackend connected to the test Redis.
+
+    Uses ``REDIS_URL`` env var (set by ``test_integration_docker``).
+    Skips the test if Redis is not available.
+    """
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if not redis_url:
+        pytest.skip("REDIS_URL not set — run with make test_integration_docker")
+
+    from deepagent_temporal.streaming import RedisStreamBackend
+
+    backend = RedisStreamBackend(redis_url=redis_url, stream_ttl_seconds=30)
+    # Verify connectivity
+    try:
+        r = await backend._get_redis()
+        await r.ping()
+    except Exception as exc:
+        pytest.skip(f"Redis not reachable at {redis_url}: {exc}")
+
+    yield backend
+    await backend.close()

@@ -20,6 +20,9 @@ dependencies = [
 Source = "https://github.com/pradithya/deepagent-temporal"
 Documentation = "https://pradithya.github.io/deepagent-temporal"
 
+[project.optional-dependencies]
+streaming = ["redis[hiredis]>=5.0.0"]
+
 [dependency-groups]
 test = [
   "pytest",
@@ -28,6 +31,8 @@ test = [
   "pytest-watcher",
   "langgraph",
   "pytest-retry>=1.7.0",
+  "langchain-core",
+  "redis[hiredis]>=5.0.0",
 ]
 lint = [
   "ruff",

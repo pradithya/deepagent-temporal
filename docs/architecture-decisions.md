@@ -168,5 +168,5 @@ While waiting, the Workflow consumes zero compute resources (Temporal's native s
 - **Sandbox execution** — `deepagent-temporal` does not provide sandboxed code execution. Use existing sandbox providers (Modal, Daytona) with Deep Agents' `SandboxBackend`.
 - **LLM provider failover** — Temporal retries Activities, but does not switch between LLM providers on failure. Use LangChain's fallback chains for this.
 - **Multi-tenant isolation** — Temporal namespaces provide some isolation, but `deepagent-temporal` does not manage tenant boundaries.
-- **Real-time token streaming** — Activities are request-response. Token-level streaming uses a sidecar channel (see Limitations in README).
+- **Native in-process token streaming** — Temporal Activities are request-response, so token streaming uses callback injection (`TokenCapturingHandler`) with optional Redis Streams for real-time delivery. This adds ~10-50ms latency per token compared to LangGraph Platform's in-process streaming. See [docs/streaming-design.md](streaming-design.md).
 - **Automatic cost optimization** — Retry policies prevent runaway costs, but the library does not monitor or limit LLM API spend.

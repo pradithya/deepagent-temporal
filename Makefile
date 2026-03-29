@@ -72,9 +72,10 @@ build:
 ######################
 
 TEMPORAL_GRPC_PORT ?= 7233
+REDIS_PORT ?= 6379
 
 start_temporal:
-	TEMPORAL_GRPC_PORT=$(TEMPORAL_GRPC_PORT) docker compose up -d
+	TEMPORAL_GRPC_PORT=$(TEMPORAL_GRPC_PORT) REDIS_PORT=$(REDIS_PORT) docker compose up -d
 
 stop_temporal:
 	docker compose down
@@ -88,5 +89,13 @@ wait_temporal:
 	done
 	@echo "Temporal server is ready."
 
-test_integration_docker: start_temporal wait_temporal
-	TEMPORAL_ADDRESS=localhost:$(TEMPORAL_GRPC_PORT) uv run pytest -m integration $(TEST)
+wait_redis:
+	@echo "Waiting for Redis to be ready..."
+	@timeout=30; while ! docker exec temporal-redis redis-cli ping >/dev/null 2>&1; do \
+		sleep 1; timeout=$$((timeout - 1)); \
+		if [ $$timeout -le 0 ]; then echo "Redis failed to start"; exit 1; fi; \
+	done
+	@echo "Redis is ready."
+
+test_integration_docker: start_temporal wait_temporal wait_redis
+	TEMPORAL_ADDRESS=localhost:$(TEMPORAL_GRPC_PORT) REDIS_URL=redis://localhost:$(REDIS_PORT) uv run pytest -m integration $(TEST)
