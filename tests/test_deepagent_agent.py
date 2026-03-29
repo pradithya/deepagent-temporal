@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langgraph.temporal.config import SubAgentConfig, WorkflowOutput
+from langgraph.temporal.config import RetryPolicyConfig, SubAgentConfig, WorkflowOutput
 from langgraph.temporal.converter import GraphRegistry
 
 
@@ -206,6 +206,68 @@ class TestTemporalDeepAgentDelegation:
         config = {"configurable": {"thread_id": "test-thread"}}
         state = await agent.get_state(config)
         assert state["values"] == {"messages": ["hi"]}
+
+
+class TestRetryPolicies:
+    def setup_method(self) -> None:
+        GraphRegistry.reset()
+
+    def test_retry_policies_attached_to_graph(self) -> None:
+        from deepagent_temporal.agent import TemporalDeepAgent
+
+        mock_graph = MagicMock()
+        mock_graph.name = "test"
+        mock_client = MagicMock()
+
+        policies = {
+            "call_model": RetryPolicyConfig(max_attempts=1),
+            "tools": RetryPolicyConfig(max_attempts=3),
+        }
+        TemporalDeepAgent(mock_graph, mock_client, node_retry_policies=policies)
+
+        assert mock_graph.retry_policies == policies
+
+    def test_no_retry_policies_leaves_graph_unchanged(self) -> None:
+        from deepagent_temporal.agent import TemporalDeepAgent
+
+        mock_graph = MagicMock()
+        mock_graph.name = "test"
+        mock_client = MagicMock()
+
+        TemporalDeepAgent(mock_graph, mock_client)
+
+        # retry_policies should not have been explicitly set
+        assert not hasattr(mock_graph, "retry_policies") or not isinstance(
+            mock_graph.retry_policies, dict
+        )
+
+    def test_recommended_retry_policies(self) -> None:
+        from deepagent_temporal.agent import TemporalDeepAgent
+
+        policies = TemporalDeepAgent.recommended_retry_policies()
+
+        assert "call_model" in policies
+        assert "tools" in policies
+        assert policies["call_model"].max_attempts == 1
+        assert policies["tools"].max_attempts == 1
+
+    def test_factory_with_retry_policies(self) -> None:
+        from deepagent_temporal.agent import (
+            TemporalDeepAgent,
+            create_temporal_deep_agent,
+        )
+
+        mock_graph = MagicMock()
+        mock_graph.name = "test"
+        mock_client = MagicMock()
+
+        policies = {"call_model": RetryPolicyConfig(max_attempts=2)}
+        agent = create_temporal_deep_agent(
+            mock_graph, mock_client, node_retry_policies=policies
+        )
+
+        assert mock_graph.retry_policies == policies
+        assert isinstance(agent, TemporalDeepAgent)
 
 
 class TestCreateTemporalDeepAgent:

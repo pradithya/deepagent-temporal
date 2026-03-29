@@ -12,7 +12,7 @@ from datetime import timedelta
 from typing import Any
 
 from langgraph.pregel import Pregel
-from langgraph.temporal.config import ActivityOptions, SubAgentConfig
+from langgraph.temporal.config import ActivityOptions, RetryPolicyConfig, SubAgentConfig
 from langgraph.temporal.graph import TemporalGraph
 from langgraph.temporal.streaming import StreamBackend
 from temporalio.client import Client as TemporalClient
@@ -45,6 +45,11 @@ class TemporalDeepAgent:
         subagent_execution_timeout: Maximum execution time for sub-agent
             Child Workflows.
         node_activity_options: Per-node Activity configuration overrides.
+        node_retry_policies: Per-node retry policy configuration. Keys are
+            node names (e.g., ``call_model``, ``tools``), values are
+            ``RetryPolicyConfig`` instances. Set on the compiled graph so
+            ``langgraph-temporal`` includes them in the ``WorkflowInput``.
+            Use ``recommended_retry_policies()`` for sensible defaults.
         workflow_execution_timeout: Maximum time for entire workflow
             execution including retries.
         workflow_run_timeout: Maximum time for a single workflow run.
@@ -62,10 +67,16 @@ class TemporalDeepAgent:
         subagent_task_queue: str | None = None,
         subagent_execution_timeout: timedelta | None = None,
         node_activity_options: dict[str, ActivityOptions] | None = None,
+        node_retry_policies: dict[str, RetryPolicyConfig] | None = None,
         workflow_execution_timeout: timedelta | None = None,
         workflow_run_timeout: timedelta | None = None,
         stream_backend: StreamBackend | None = None,
     ) -> None:
+        # Attach retry policies to the graph so _build_workflow_input picks
+        # them up via hasattr(graph, "retry_policies").
+        if node_retry_policies is not None:
+            agent.retry_policies = node_retry_policies  # type: ignore[attr-defined]
+
         self._temporal_graph = TemporalGraph(
             agent,
             client,
@@ -167,6 +178,25 @@ class TemporalDeepAgent:
         env = await WorkflowEnvironment.start_local()
         return cls(agent, env.client, task_queue=task_queue, **kwargs)
 
+    @staticmethod
+    def recommended_retry_policies() -> dict[str, RetryPolicyConfig]:
+        """Return recommended retry policies for Deep Agent nodes.
+
+        - ``call_model``: 1 attempt (no Temporal retry). LLM SDKs handle
+          their own rate-limit/transient retries internally. Letting
+          Temporal also retry re-invokes the model, causing duplicate API
+          costs.
+        - ``tools``: 1 attempt (no Temporal retry). Tool side-effects
+          (file writes, shell commands) are generally not idempotent.
+
+        Override per-node as needed. For example, read-only tool nodes
+        could safely use ``max_attempts=3``.
+        """
+        return {
+            "call_model": RetryPolicyConfig(max_attempts=1),
+            "tools": RetryPolicyConfig(max_attempts=1),
+        }
+
     def _inject_temporal_config(self, config: dict[str, Any] | None) -> dict[str, Any]:
         """Add affinity and sub-agent config to `config["configurable"]`.
 
@@ -201,6 +231,7 @@ def create_temporal_deep_agent(
     subagent_task_queue: str | None = None,
     subagent_execution_timeout: timedelta | None = None,
     node_activity_options: dict[str, ActivityOptions] | None = None,
+    node_retry_policies: dict[str, RetryPolicyConfig] | None = None,
     workflow_execution_timeout: timedelta | None = None,
     workflow_run_timeout: timedelta | None = None,
     stream_backend: StreamBackend | None = None,
@@ -218,6 +249,7 @@ def create_temporal_deep_agent(
         subagent_task_queue: Task queue for sub-agent Child Workflows.
         subagent_execution_timeout: Max execution time for sub-agents.
         node_activity_options: Per-node Activity configuration.
+        node_retry_policies: Per-node retry policy configuration.
         workflow_execution_timeout: Max time for entire workflow.
         workflow_run_timeout: Max time for a single workflow run.
         stream_backend: Backend for streaming events.
@@ -234,6 +266,7 @@ def create_temporal_deep_agent(
         subagent_task_queue=subagent_task_queue,
         subagent_execution_timeout=subagent_execution_timeout,
         node_activity_options=node_activity_options,
+        node_retry_policies=node_retry_policies,
         workflow_execution_timeout=workflow_execution_timeout,
         workflow_run_timeout=workflow_run_timeout,
         stream_backend=stream_backend,
