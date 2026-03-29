@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 readme = "README.md"
 license = "MIT"
 dependencies = [
-    "langgraph-temporal>=0.1.0",
+    "langgraph-temporal>=0.2.0",
     "langgraph>=1.0.0",
     "temporalio>=1.7.0",
 ]
@@ -19,9 +19,6 @@ dependencies = [
 [project.urls]
 Source = "https://github.com/pradithya/deepagent-temporal"
 Documentation = "https://pradithya.github.io/deepagent-temporal"
-
-[tool.uv.sources]
-langgraph-temporal = { path = "../langgraph-temporal", editable = true }
 
 [dependency-groups]
 test = [

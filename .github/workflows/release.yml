@@ -13,8 +13,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Clone langgraph-temporal
-        run: git clone --depth 1 https://github.com/pradithya/langgraph-temporal.git ../langgraph-temporal
 
       - uses: astral-sh/setup-uv@v4
         with:
