@@ -16,6 +16,10 @@ dependencies = [
     "temporalio>=1.7.0",
 ]
 
+[project.urls]
+Source = "https://github.com/pradithya/deepagent-temporal"
+Documentation = "https://pradithya.github.io/deepagent-temporal"
+
 [tool.uv.sources]
 langgraph-temporal = { path = "../langgraph-temporal", editable = true }
 
@@ -33,9 +37,14 @@ lint = [
   "codespell",
   "mypy",
 ]
+docs = [
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.27",
+]
 dev = [
   {include-group = "test"},
   {include-group = "lint"},
+  {include-group = "docs"},
 ]
 
 [tool.uv]

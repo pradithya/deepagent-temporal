@@ -10,3 +10,4 @@ build/
 *.egg
 .venv/
 uv.lock
+site/

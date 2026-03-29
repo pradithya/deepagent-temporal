@@ -1,4 +1,4 @@
-.PHONY: test test_watch test_integration lint type format build start_temporal stop_temporal wait_temporal test_integration_docker
+.PHONY: test test_watch test_integration lint type format build start_temporal stop_temporal wait_temporal test_integration_docker docs docs_serve
 
 ######################
 # TESTING AND COVERAGE
@@ -41,6 +41,16 @@ type:
 format format_diff:
 	uv run ruff format $(PYTHON_FILES)
 	uv run ruff check --select I --fix $(PYTHON_FILES)
+
+######################
+# DOCS
+######################
+
+docs:
+	uv run mkdocs build --strict
+
+docs_serve:
+	uv run mkdocs serve
 
 ######################
 # BUILD
