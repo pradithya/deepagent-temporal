@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout langgraph-temporal
+        uses: actions/checkout@v4
+        with:
+          repository: pradithya/langgraph-temporal
+          path: ../langgraph-temporal
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - run: uv sync
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout langgraph-temporal
+        uses: actions/checkout@v4
+        with:
+          repository: pradithya/langgraph-temporal
+          path: ../langgraph-temporal
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync
+      - run: make test
+
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout langgraph-temporal
+        uses: actions/checkout@v4
+        with:
+          repository: pradithya/langgraph-temporal
+          path: ../langgraph-temporal
+
+      - name: Set up environment
+        run: cp .env.ci .env
+
+      - name: Configure vm.max_map_count for Elasticsearch
+        run: sudo sysctl -w vm.max_map_count=262144
+
+      - name: Start Temporal
+        run: make start_temporal
+
+      - name: Wait for Temporal to be ready
+        run: make wait_temporal
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - run: uv sync
+
+      - name: Run integration tests
+        run: make test_integration
+        env:
+          TEMPORAL_ADDRESS: localhost:7233
+
+      - name: Show docker compose logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down Temporal
+        if: always()
+        run: make stop_temporal
